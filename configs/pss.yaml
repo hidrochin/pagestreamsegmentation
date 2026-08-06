@@ -1,0 +1,42 @@
+# PSS on LayoutXLM — primary experiment (I1: page encoder + 1D temporal CNN over pages).
+# Merged over pss/config.py::default_config(); any leaf here overrides a default,
+# and any leaf can be further overridden on the CLI (e.g. model.variant=B0).
+
+workspace: ./pss_runs/i1_layoutxlm
+
+model:
+  backbone: microsoft/layoutxlm-base
+  variant: I1            # B0 (per-page) | B1 (page-pair) | I1 (sequence over pages)
+  max_seq_length: 512
+  image_size: 224
+  page_embed: cls        # cls | cls_mean | cls_mean_visual
+  n_types: 16            # set to the number of document types in your corpus
+  type_loss_weight: 1.0
+  boundary_pos_weight: 2.0
+  freeze_encoder: false
+  seq_head:
+    type: cnn            # cnn (TABME, primary) | transformer (ablation)
+    n_layers: 5
+    kernel_size: 3
+    dropout: 0.2
+    hidden_size: 0
+
+data:
+  root: ./datasets/pss
+  max_pages: 32
+  window_stride: 24
+
+train:
+  batch_size: 4
+  num_workers: 4
+  lr: 5.0e-5
+  max_epochs: 30
+  early_stop_patience: 5
+  clip_grad_norm: 1.0
+  accelerator: gpu
+  precision: "16-mixed"    # PL 2.x precision string
+  val_interval: 1
+
+val:
+  batch_size: 4
+  num_workers: 4

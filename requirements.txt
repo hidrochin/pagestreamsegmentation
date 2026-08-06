@@ -1,22 +1,30 @@
-nptyping==1.4.2
-numpy==1.20.3
-opencv-python-headless==4.5.4.60
-pytorch-lightning==1.5.6
-omegaconf
-pillow
-six
-overrides==4.1.2
-transformers==4.11.3
-seqeval==0.0.12
-imagesize
+# PSS on LayoutXLM — modernized dependency stack.
+#
+# Core versions are chosen to be mutually compatible:
+#   torch 2.6  <->  torchvision 0.21  <->  transformers 4.53  <->  lightning 2.5
+# Pick the CUDA build of torch/torchvision that matches your machine, e.g.:
+#   pip install torch==2.6.0 torchvision==0.21.0 \
+#       --extra-index-url https://download.pytorch.org/whl/cu124
+# (swap cu124 for cu118 / cu126 as appropriate; omit for the CPU build).
 
-tensorboard>=2.2.0
+torch==2.6.0
+torchvision==0.21.0
 
-# code-style
-isort==5.9.3
-black==21.9b0
+transformers>=4.53,<4.54     # ships LayoutLMv2Model + LayoutXLMTokenizer/ImageProcessor
+pytorch-lightning>=2.5.1,<3  # 2.5.1+ supports torch 2.6
+omegaconf>=2.3
 
-# pytorch
---find-links https://download.pytorch.org/whl/torch_stable.html
-torch==1.9.1+cu102
-torchvision==0.10.1+cu102
+sentencepiece>=0.2.0         # LayoutXLM tokenizer (SentencePiece / XLM-R)
+pillow>=10.0                 # page-image loading (pss/data/dataset.py)
+PyMuPDF>=1.24                # PDF -> page-image rendering (pss/data/render.py)
+tensorboard>=2.14            # Lightning logging
+
+# LayoutLMv2/XLM's visual backbone is detectron2, which has no prebuilt wheels for
+# torch 2.6 — build it from source (needs a CUDA toolkit / nvcc matching your torch):
+#   pip install 'git+https://github.com/facebookresearch/detectron2.git'
+# If the source build fails against torch 2.6, torch 2.4.x is the safest fallback
+# (torch==2.4.1 / torchvision==0.19.1), still compatible with transformers 4.53.
+
+# --- code style (optional) ---
+isort>=5.13
+black>=24.0

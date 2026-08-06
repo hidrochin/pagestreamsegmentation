@@ -1,96 +1,63 @@
-# BROS
+# PSS — Page Stream Segmentation on LayoutXLM
 
-## Introduction
+Given a PDF that is a **stream of pages from several concatenated documents**, this
+project (a) finds where each document **starts and ends** (breaking-point
+detection) and (b) **classifies each resulting document by type**. It is built on a
+single **LayoutXLM** page encoder (text + layout + image) with a temporal model
+over the page sequence.
 
-BROS (BERT Relying On Spatiality) is a pre-trained language model focusing on text and layout for better key information extraction from documents.
-Given the OCR results of the document image, which are text and bounding box pairs, it can perform various key information extraction tasks, such as extracting an ordered item list from receipts.
-For more details, please refer to our paper:
+> This repository began as [BROS](https://github.com/clovaai/bros) (BERT Relying On
+> Spatiality, NAVER Corp., AAAI 2022) and has been repurposed: the FUNSD/SROIE
+> key-information-extraction code was removed and replaced by the self-contained
+> `pss/` package. See **Acknowledgements** and `NOTICE`/`LICENSE` for attribution.
 
-**BROS: A Pre-trained Language Model Focusing on Text and Layout for Better Key Information Extraction from Documents**<br> 
-Teakgyu Hong, Donghyun Kim, Mingi Ji, Wonseok Hwang, Daehyun Nam, Sungrae Park<br>
-AAAI 2022 - Main Technical Track
+## Approach
 
-[[arXiv]](https://arxiv.org/abs/2108.04539)
+Every page is encoded once by LayoutXLM (which shares the LayoutLMv2 architecture,
+so it fuses text, layout, and the page image in one encoder). The per-page
+embeddings are then modelled across the stream to predict, for each page, whether
+it begins a new document, plus its document type. Three variants form a ladder:
 
-## Pre-trained models
+- **B0** — per-page, no context (baseline / floor).
+- **B1** — page-pair transition classifier (baseline).
+- **I1** — page encoder → **1D temporal CNN** over pages (TABME-style) → joint
+  boundary + type heads. **Primary, shippable.**
 
-| name               | # params | Hugging Face - Models                                                                           |
-|--------------------|---------:|-------------------------------------------------------------------------------------------------|
-| bros-base-uncased  |   < 110M | [naver-clova-ocr/bros-base-uncased](https://huggingface.co/naver-clova-ocr/bros-base-uncased)   |
-| bros-large-uncased |   < 340M | [naver-clova-ocr/bros-large-uncased](https://huggingface.co/naver-clova-ocr/bros-large-uncased) |
+The design and hyper-parameters follow two papers included under `papers/`:
+**TABME** ("Tab this Folder", DocEng '22) and **Wiedemann & Heyer** (2018). A key
+finding — vision is the dominant modality for PSS — is what makes LayoutXLM's
+integrated visual backbone worth its cost.
 
-## Model usage
+## Quickstart
 
-The example code below is written with reference to [LayoutLM](https://huggingface.co/docs/transformers/model_doc/layoutlm).
-
-```python
-import torch
-from bros import BrosTokenizer, BrosModel
-
-
-tokenizer = BrosTokenizer.from_pretrained("naver-clova-ocr/bros-base-uncased")
-model = BrosModel.from_pretrained("naver-clova-ocr/bros-base-uncased")
-
-
-width, height = 1280, 720
-
-words = ["to", "the", "moon!"]
-quads = [
-    [638, 451, 863, 451, 863, 569, 638, 569],
-    [877, 453, 1190, 455, 1190, 568, 876, 567],
-    [632, 566, 1107, 566, 1107, 691, 632, 691],
-]
-
-bbox = []
-for word, quad in zip(words, quads):
-    n_word_tokens = len(tokenizer.tokenize(word))
-    bbox.extend([quad] * n_word_tokens)
-
-cls_quad = [0.0] * 8
-sep_quad = [width, height] * 4
-bbox = [cls_quad] + bbox + [sep_quad]
-
-encoding = tokenizer(" ".join(words), return_tensors="pt")
-input_ids = encoding["input_ids"]
-attention_mask = encoding["attention_mask"]
-
-bbox = torch.tensor([bbox])
-bbox[:, :, [0, 2, 4, 6]] = bbox[:, :, [0, 2, 4, 6]] / width
-bbox[:, :, [1, 3, 5, 7]] = bbox[:, :, [1, 3, 5, 7]] / height
-
-outputs = model(input_ids=input_ids, bbox=bbox, attention_mask=attention_mask)
-last_hidden_state = outputs.last_hidden_state
-
-print("- last_hidden_state")
-print(last_hidden_state)
-print()
-print("- last_hidden_state.shape")
-print(last_hidden_state.shape)
+```bash
+pip install -r requirements.txt          # torch 2.6 / transformers 4.53 / lightning 2.5
+# LayoutLMv2/XLM's visual backbone (build from source; needs a CUDA toolkit):
+pip install 'git+https://github.com/facebookresearch/detectron2.git'
 ```
 
-Result
+Then follow **[pss/README.md](pss/README.md)** for the full workflow: prepare a
+corpus of single, type-labeled documents, synthesize training streams
+(`python -m pss.data.synthesize`), train (`python -m pss.train`), and evaluate
+(`python -m pss.evaluate`). A CUDA GPU is required for training.
+
+## Layout
+
 ```
-- last_hidden_state
-tensor([[[-0.0342,  0.2487, -0.2819,  ...,  0.1495,  0.0218,  0.0484],
-         [ 0.0792, -0.0040, -0.0127,  ..., -0.0918,  0.0810,  0.0419],
-         [ 0.0808, -0.0918,  0.0199,  ..., -0.0566,  0.0869, -0.1859],
-         [ 0.0862,  0.0901,  0.0473,  ..., -0.1328,  0.0300, -0.1613],
-         [-0.2925,  0.2539,  0.1348,  ...,  0.1988, -0.0148, -0.0982],
-         [-0.4160,  0.2135, -0.0390,  ...,  0.6908, -0.2985,  0.1847]]],
-       grad_fn=<NativeLayerNormBackward>)
-
-- last_hidden_state.shape
-torch.Size([1, 6, 768])
+pss/               self-contained PSS package (data, model, train/eval, metrics)
+configs/pss.yaml   primary experiment config
+papers/            reference papers (TABME; Wiedemann & Heyer)
+requirements.txt   modernized dependency stack
 ```
-
-## Fine-tuning examples
-
-Please refer to [docs/finetuning_examples.md](docs/finetuning_examples.md).
 
 ## Acknowledgements
 
-We referenced the code of [LayoutLM](https://huggingface.co/docs/transformers/model_doc/layoutlm) when implementing BROS in the form of Hugging Face - transformers.  
-In this repository, we used two public benchmark datasets, [FUNSD](https://guillaumejaume.github.io/FUNSD/) and [SROIE](https://rrc.cvc.uab.es/?ch=13).
+- Derived from **BROS** (NAVER Corp.) — see the original
+  [paper](https://arxiv.org/abs/2108.04539) and repository.
+- The page encoder is **LayoutXLM / LayoutLMv2**
+  ([docs](https://huggingface.co/docs/transformers/model_doc/layoutxlm)).
+- Segmentation design follows **TABME** (github.com/aldolipani/TABME) and
+  **Wiedemann & Heyer** (arXiv 1710.03006).
 
 ## License
 
