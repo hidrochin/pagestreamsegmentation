@@ -122,11 +122,17 @@ def run_stream(
 
 def main():
     cfg = get_config()
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = (
+        "cuda"
+        if torch.cuda.is_available()
+        else "mps" if torch.backends.mps.is_available() else "cpu"
+    )
 
     module = PSSLightningModule(cfg)
     net = module.net
-    load_weights(net, cfg.pretrained_model_file)
+    load_weights(
+        net, cfg.pretrained_model_file, strict=not cfg.get("allow_partial_load", False)
+    )
     net.to(device).eval()
 
     tokenizer = build_tokenizer(cfg.model.backbone)

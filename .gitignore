@@ -133,6 +133,7 @@ dmypy.json
 tmp/
 pretrained_models/
 datasets/
+pss_runs/
 
 preprocess/funsd/data/
 preprocess/funsd/dataset/

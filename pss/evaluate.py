@@ -23,7 +23,7 @@ from pss.lightning_module import PSSLightningModule
 from pss.stitch import StreamAccumulator
 
 
-def load_weights(net, ckpt_path):
+def load_weights(net, ckpt_path, strict=True):
     # weights_only=False: Lightning checkpoints hold non-tensor objects (hyper-params,
     # callbacks); torch>=2.6 flipped this default to True, which would refuse to load.
     sd = torch.load(ckpt_path, map_location="cpu", weights_only=False)
@@ -32,20 +32,34 @@ def load_weights(net, ckpt_path):
     for k, v in sd.items():
         new[k[len("net.") :] if k.startswith("net.") else k] = v
     missing, unexpected = net.load_state_dict(new, strict=False)
-    if missing:
-        print(f"[load] missing keys: {len(missing)} (e.g. {missing[:3]})")
-    if unexpected:
-        print(f"[load] unexpected keys: {len(unexpected)} (e.g. {unexpected[:3]})")
+    if missing or unexpected:
+        msg = (
+            f"[load] missing keys: {len(missing)} {missing}\n"
+            f"[load] unexpected keys: {len(unexpected)} {unexpected}"
+        )
+        if strict:
+            raise RuntimeError(
+                f"{msg}\ncheckpoint {ckpt_path} does not match the current model "
+                "(model.variant/page_embed/seq_head.type mismatch?). Pass "
+                "allow_partial_load=true to load anyway."
+            )
+        print(msg)
 
 
 def main():
     cfg = get_config()
     mode = cfg.get("eval_mode", "test")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = (
+        "cuda"
+        if torch.cuda.is_available()
+        else "mps" if torch.backends.mps.is_available() else "cpu"
+    )
 
     module = PSSLightningModule(cfg)
     net = module.net
-    load_weights(net, cfg.pretrained_model_file)
+    load_weights(
+        net, cfg.pretrained_model_file, strict=not cfg.get("allow_partial_load", False)
+    )
     net.to(device).eval()
 
     ds = PSSDataset(cfg, mode)

@@ -15,29 +15,42 @@ from torch import nn
 
 
 class TemporalCNN(nn.Module):
-    """Stack of Conv1d over the page axis (TABME). Circular padding keeps the
-    window's continuity; ReLU + Dropout after each conv. Channels are preserved
-    (or set to ``hidden_size``) so the heads see D-dim contextual features — the
-    final logit projection lives in the heads, not the conv stack."""
+    """Stack of Conv1d over the page axis (TABME). Zero padding at the sequence
+    ends (not circular — pages don't wrap); ReLU + Dropout after each conv.
+    Channels are preserved (or set to ``hidden_size``) so the heads see D-dim
+    contextual features — the final logit projection lives in the heads, not the
+    conv stack. Padded pages (``page_mask==0``) are re-zeroed after every layer so
+    their (bias-only) activations can never leak into real pages' receptive
+    fields, matching TransformerOverPages' masking guarantee."""
 
     def __init__(self, dim, n_layers=5, kernel_size=3, dropout=0.2, hidden_size=0):
         super().__init__()
         c = hidden_size or dim
         pad = kernel_size // 2
-        layers = []
+        blocks = []
         in_c = dim
         for _ in range(n_layers):
-            layers += [
-                nn.Conv1d(in_c, c, kernel_size, padding=pad, padding_mode="circular"),
-                nn.ReLU(inplace=True),
-                nn.Dropout(dropout),
-            ]
+            blocks.append(
+                nn.Sequential(
+                    nn.Conv1d(in_c, c, kernel_size, padding=pad),
+                    nn.ReLU(inplace=True),
+                    nn.Dropout(dropout),
+                )
+            )
             in_c = c
-        self.net = nn.Sequential(*layers)
+        self.blocks = nn.ModuleList(blocks)
         self.out_dim = in_c
 
     def forward(self, x, page_mask=None):  # x: [B, P, D]
-        return self.net(x.transpose(1, 2)).transpose(1, 2)  # [B, P, C]
+        m = page_mask.unsqueeze(-1).to(x.dtype) if page_mask is not None else None
+        h = x * m if m is not None else x
+        h = h.transpose(1, 2)  # [B, D, P]
+        m_t = m.transpose(1, 2) if m is not None else None  # [B, 1, P]
+        for block in self.blocks:
+            h = block(h)
+            if m_t is not None:
+                h = h * m_t
+        return h.transpose(1, 2)  # [B, P, C]
 
 
 class TransformerOverPages(nn.Module):

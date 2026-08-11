@@ -146,6 +146,31 @@ def _validate(cfg):
     assert cfg.infer.window_pages >= 1
     assert 1 <= cfg.infer.window_stride <= cfg.infer.window_pages
 
+    if cfg.model.seq_head.type == "transformer":
+        encoder_dim = _encoder_output_dim(cfg)
+        assert encoder_dim % cfg.model.seq_head.n_heads == 0, (
+            f"model.seq_head.n_heads ({cfg.model.seq_head.n_heads}) must divide "
+            f"the encoder output dim ({encoder_dim}, from model.page_embed="
+            f"{cfg.model.page_embed}) evenly for TransformerOverPages"
+        )
+
+    if cfg.infer.window_pages != cfg.data.max_pages:
+        print(
+            f"[config] warning: infer.window_pages ({cfg.infer.window_pages}) != "
+            f"data.max_pages ({cfg.data.max_pages}) — the model was trained with "
+            f"{cfg.data.max_pages}-page context; production inference at a "
+            "different window width may see degraded accuracy. If this is an "
+            "intentional deployment-hardware constraint, ignore this warning."
+        )
+
+
+_BACKBONE_HIDDEN_SIZE = 768  # LayoutLMv2/XLM-base hidden size (both SUPPORTED_BACKBONES)
+
+
+def _encoder_output_dim(cfg):
+    mult = {"cls": 1, "cls_mean": 2, "cls_mean_visual": 3}[cfg.model.page_embed]
+    return mult * _BACKBONE_HIDDEN_SIZE
+
 
 def _derive(cfg):
     """Set derived paths and split the global batch size across GPUs (if any)."""

@@ -15,12 +15,29 @@ import os
 import torch
 from pytorch_lightning import Trainer, seed_everything
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+from pytorch_lightning.loggers import TensorBoardLogger
 from torch.utils.data import DataLoader
 
 from pss.config import get_config
 from pss.data import PSSDataset, collate_streams
 from pss.lightning_module import PSSLightningModule
 from pss.model.page_encoder import build_image_processor, build_tokenizer
+
+
+def _select_accelerator(cfg):
+    """Resolve accelerator/devices/strategy/precision from cfg.train.accelerator
+    and what's actually available. When accelerator="gpu": prefer CUDA (using the
+    configured precision + DDP across GPUs), else fall back to Apple's MPS backend
+    (single device — no multi-GPU strategy, and no CUDA-style mixed precision, so
+    precision is forced to full), else fall back to CPU."""
+    if cfg.train.accelerator != "gpu":
+        return "cpu", 1, "auto", "32-true"
+    n_gpus = torch.cuda.device_count()
+    if n_gpus > 0:
+        return "gpu", n_gpus, ("ddp" if n_gpus > 1 else "auto"), cfg.train.precision
+    if torch.backends.mps.is_available():
+        return "mps", 1, "auto", "32-true"
+    return "cpu", 1, "auto", "32-true"
 
 
 def main():
@@ -67,18 +84,19 @@ def main():
         monitor="val_bd_f1", mode="max", patience=cfg.train.early_stop_patience
     )
 
-    n_gpus = torch.cuda.device_count()
-    use_gpu = cfg.train.accelerator == "gpu" and n_gpus > 0
+    accelerator, devices, strategy, precision = _select_accelerator(cfg)
+    logger = TensorBoardLogger(save_dir=cfg.tensorboard_dir, name="", version="")
     trainer = Trainer(
-        accelerator="gpu" if use_gpu else "cpu",
-        devices=n_gpus if use_gpu else 1,
-        strategy="ddp" if use_gpu and n_gpus > 1 else "auto",
+        accelerator=accelerator,
+        devices=devices,
+        strategy=strategy,
         max_epochs=cfg.train.max_epochs,
         gradient_clip_val=cfg.train.clip_grad_norm,
-        precision=cfg.train.precision if use_gpu else "32-true",
+        precision=precision,
         callbacks=[ckpt, early],
         check_val_every_n_epoch=cfg.train.val_interval,
         default_root_dir=cfg.workspace,
+        logger=logger,
     )
     trainer.fit(module, train_loader, val_loader)
 
