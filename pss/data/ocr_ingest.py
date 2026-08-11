@@ -56,3 +56,20 @@ def ingest_ocr(page_image_path):
     raise NotImplementedError(
         "Connect your OCR detection model here — return (text, [x0,y0,x1,y1]) per word."
     )
+
+
+def parse_sidecar_txt(path):
+    """Read OCR already run and saved to a sidecar file, one word per line:
+    ``x0,y0,x1,y1<TAB>text`` (pixel coords). Returns list of (text, [x0,y0,x1,y1]),
+    the same shape ``ingest_ocr`` returns, so both feed ``make_page`` identically.
+    """
+    out = []
+    with open(path, encoding="utf-8") as fp:
+        for line in fp:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            box_str, text = line.split("\t", 1)
+            box = [int(v) for v in box_str.split(",")]
+            out.append((text, box))
+    return out

@@ -45,6 +45,14 @@ python -m pss.train --config=configs/pss.yaml model.seq_head.type=transformer  #
 # Evaluate a checkpoint (full stream stitching)
 python -m pss.evaluate --config=configs/pss.yaml eval_mode=test \
     pretrained_model_file=pss_runs/i1_layoutxlm/checkpoints/last.ckpt
+
+# Ingest a raw corpus that already has OCR sidecar files (see Data preparation)
+python -m pss.data.ingest_raw --config configs/raw_sources.yaml --out_root datasets/pss
+
+# Production inference: fixed-width sliding window, no ground truth
+python -m pss.infer --config=configs/pss.yaml \
+    pretrained_model_file=pss_runs/i1_layoutxlm/checkpoints/last.ckpt \
+    infer.stream=stream.json infer.window_pages=10 infer.window_stride=6
 ```
 
 Any config leaf is CLI-overridable with dot-notation, e.g. `train.batch_size=8
@@ -69,15 +77,36 @@ datasets/pss/
   [pss/data/render.py](pss/data/render.py) rasterizes PDFs (PyMuPDF).
   [pss/data/ocr_ingest.py](pss/data/ocr_ingest.py) is the adapter to plug in **your**
   OCR model — `ingest_ocr()` is a stub you must wire; then use the
-  `make_word/make_page/make_doc/save_doc` builders.
+  `make_word/make_page/make_doc/save_doc` builders. If OCR was already run and saved
+  to per-image sidecar files instead, `ocr_ingest.parse_sidecar_txt(path)` reads the
+  `x0,y0,x1,y1<TAB>text`-per-line format directly (no model call needed).
+- **[pss/data/ingest_raw.py](pss/data/ingest_raw.py)** converts a raw
+  `<raw_root>/<source>/{images/,ocr/}` corpus straight into `docs/`+`images/`: images
+  are grouped into multi-page documents by filename prefix (`<doc>_<page>.jpg`), and
+  each source path is labeled with a `type` from a small declarative
+  [configs/raw_sources.yaml](configs/raw_sources.yaml) (`path` glob → `type`) — the
+  raw folder name itself is never assumed to be the type. Re-running is
+  **incremental**: `<out_root>/.ingest_manifest.json` tracks each doc's source file
+  mtimes, so unchanged documents are skipped and only new/modified ones are
+  (re)converted — safe to rerun after adding a new `sources:` entry or dropping more
+  images into an existing folder.
 - **Synthesize streams** with [pss/data/synthesize.py](pss/data/synthesize.py) (TABME
   Algorithm 1): concatenate whole docs into "folders" with **Poisson-distributed**
   lengths, sampled without repetition, **split at the document level** (90/5/5) to
   avoid leakage. The first page of each source doc gets `boundary=1`; every page
   inherits the doc's `type`. Set `model.n_types` to `len(class_names.txt)`.
+  `--mix_strategy` controls how documents are chosen per folder: `stratified`
+  (default) deliberately draws from multiple source types per folder so streams
+  realistically mix document types instead of relying on chance; `random` is the
+  original TABME-style uniform draw from the whole split pool.
 
 `PSSDataset` reads `preprocessed_files_{mode}.txt` to find folders, then cuts each
-stream into overlapping sliding windows.
+stream into overlapping sliding windows via
+[pss/data/windowing.py](pss/data/windowing.py)`::build_stream_windows` — the same
+function `pss/infer.py` uses to window a live, unlabeled stream at inference time, so
+training and production windowing can never drift apart. Page → tensor encoding
+(tokenizer + image processor) is likewise shared, in
+[pss/data/page_codec.py](pss/data/page_codec.py)`::encode_page`.
 
 ## Architecture
 
@@ -111,8 +140,17 @@ The model is assembled from a **shared page encoder** + a **context model over p
   type acc. Optimizer: Adam @ `train.lr` (TABME used 5e-5).
 - **[pss/train.py](pss/train.py)** / **[pss/evaluate.py](pss/evaluate.py)** — entry
   points. Training early-stops on `val_bd_f1` (patience `train.early_stop_patience`).
-  Eval stitches overlapping windows back per stream (logits averaged over overlaps)
-  before scoring.
+  Eval stitches overlapping windows back per stream before scoring.
+- **[pss/stitch.py](pss/stitch.py)** — `StreamAccumulator`: per-absolute-page-index
+  logit averaging over overlapping windows, shared by `pss/evaluate.py` (scores
+  against ground truth) and `pss/infer.py` (production, no labels).
+- **[pss/infer.py](pss/infer.py)** — production inference over a live, unlabeled page
+  stream, fixed to a `infer.window_pages`-wide forward pass (deployment hardware
+  constraint). Any window shorter than that width — a stream's tail, or a whole
+  stream under one window — is padded with all-zero tensors + `page_mask=0`
+  (`pad_window`), **not** by repeating the last real page: a repeated page would
+  inject fabricated content into the model's context, whereas a masked pad slot is a
+  path the model is already trained to ignore (see Conventions below).
 - **[pss/metrics.py](pss/metrics.py)** — boundary P/R/F1 + Cohen's kappa (page level),
   MNDD + STP (stream level), document-type macro-F1 (scored on true segments).
 
@@ -128,16 +166,24 @@ count** (config batch size is global). The primary experiment config is
 ### Conventions (important)
 
 - **Bounding boxes**: LayoutXLM wants **4 ints** `[x0,y0,x1,y1]` scaled to `0..1000`.
-  `PSSDataset._norm_boxes` scales pixel boxes; the tokenizer inserts the special-token
-  boxes automatically (`[CLS]`→`[0,0,0,0]`, `[SEP]`→`[1000,1000,1000,1000]`).
+  `pss/data/page_codec.py::norm_boxes` scales pixel boxes; the tokenizer inserts the
+  special-token boxes automatically (`[CLS]`→`[0,0,0,0]`, `[SEP]`→`[1000,1000,1000,1000]`).
 - **Image**: `[3,224,224]`, produced by the image processor. LayoutLMv2/XLM appends 49
   visual tokens **after** the text tokens; the encoder slices `[:, :text_len]` before
   pooling text/CLS.
 - **Labels**: `boundary_labels` ∈ {0,1} (1 = first page of a new document);
-  `type_labels` = document-type id (or `-100` when unknown). Padded pages (from
-  `collate_streams` equalizing the page count across a batch) get `page_mask=0` and
-  label `-100`, which every loss/metric ignores.
+  `type_labels` = document-type id (or `-100` when unknown).
+- **Padding = `page_mask=0`, always** — never repeat a real page to fill a slot.
+  `collate_streams` pads the page axis to a batch's max page count this way, and
+  `pss/infer.py::pad_window` pads a short/tail inference window to a fixed
+  `infer.window_pages` width the same way; padded pages get label `-100` and are
+  ignored by every loss/metric (and are safe through LayoutLMv2/XLM — the 49 visual
+  tokens stay attendable even under an all-zero text mask).
 - **Sliding windows**: long streams are cut into windows of `data.max_pages` with
-  stride `data.window_stride` (overlap = `max_pages − window_stride`); eval re-stitches.
+  stride `data.window_stride` (overlap = `max_pages − window_stride`) via
+  `pss/data/windowing.py::build_stream_windows`; eval/infer re-stitch with
+  `pss/stitch.py::StreamAccumulator`. For production inference, set
+  `infer.window_pages` to the same value trained with (`data.max_pages`) — the model
+  has only ever seen that context length.
 - **Precision**: Lightning 2.x uses precision **strings** (`"16-mixed"`, `"32-true"`),
   not the old int `16`/`32`.

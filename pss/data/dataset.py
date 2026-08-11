@@ -16,32 +16,14 @@ import os
 import torch
 from torch.utils.data.dataset import Dataset
 
+from pss.data.page_codec import encode_page
+from pss.data.windowing import build_stream_windows
 from pss.model.page_encoder import build_image_processor, build_tokenizer
 
 
 def read_class_names(root):
     with open(os.path.join(root, "class_names.txt"), encoding="utf-8") as fp:
         return [ln.strip() for ln in fp if ln.strip()]
-
-
-def _norm_boxes(words, width, height):
-    """Pixel boxes -> int 0..1000, clamped. Returns (texts, boxes)."""
-    texts, boxes = [], []
-    sx = 1000.0 / max(1, width)
-    sy = 1000.0 / max(1, height)
-    for w in words:
-        x0, y0, x1, y1 = w["box"]
-        bx = [
-            min(1000, max(0, int(x0 * sx))),
-            min(1000, max(0, int(y0 * sy))),
-            min(1000, max(0, int(x1 * sx))),
-            min(1000, max(0, int(y1 * sy))),
-        ]
-        texts.append(w["text"])
-        boxes.append(bx)
-    if not texts:  # empty page — give one dummy token so the tokenizer is happy
-        texts, boxes = ["[UNK]"], [[0, 0, 0, 0]]
-    return texts, boxes
 
 
 class PSSDataset(Dataset):
@@ -81,16 +63,8 @@ class PSSDataset(Dataset):
     def _build_windows(self):
         windows = []
         for fi, (_, n) in enumerate(self.folders):
-            if n <= self.max_pages:
-                windows.append((fi, 0, n))
-                continue
-            start = 0
-            while start < n:
-                length = min(self.max_pages, n - start)
+            for start, length in build_stream_windows(n, self.max_pages, self.stride):
                 windows.append((fi, start, length))
-                if start + self.max_pages >= n:
-                    break
-                start += self.stride
         return windows
 
     def __len__(self):
@@ -109,30 +83,12 @@ class PSSDataset(Dataset):
     def _encode_page(self, page_ref):
         doc = self._doc(page_ref["doc_id"])
         page = doc["pages"][page_ref["page_idx"]]
-        texts, boxes = _norm_boxes(page["words"], page["width"], page["height"])
-
-        enc = self.tokenizer(
-            text=texts,
-            boxes=boxes,
-            truncation=True,
-            padding="max_length",
-            max_length=self.max_seq_length,
-            return_tensors="pt",
+        enc = encode_page(
+            self.tokenizer, self.image_processor, page, self.root, self.max_seq_length
         )
-        from PIL import Image
-
-        img = Image.open(os.path.join(self.root, page["image"])).convert("RGB")
-        pv = self.image_processor(img, return_tensors="pt")
-        pixel = pv["pixel_values"] if "pixel_values" in pv else pv["image"]
-
-        return {
-            "input_ids": enc["input_ids"][0],  # [T]
-            "attention_mask": enc["attention_mask"][0],  # [T]
-            "bbox": enc["bbox"][0],  # [T, 4]
-            "image": pixel[0],  # [3, 224, 224]
-            "boundary": int(page_ref["boundary"]),
-            "type": self.type2id.get(page_ref["type"], -100),
-        }
+        enc["boundary"] = int(page_ref["boundary"])
+        enc["type"] = self.type2id.get(page_ref["type"], -100)
+        return enc
 
     def __getitem__(self, idx):
         fi, start, length = self.windows[idx]

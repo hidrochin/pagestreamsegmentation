@@ -74,6 +74,13 @@ def default_config():
                 "val_interval": 1,
             },
             "val": {"batch_size": 4, "num_workers": 4},
+            "infer": {  # pss.infer — fixed-window production inference (no labels)
+                "window_pages": 10,  # forward-pass width; match to deployment hardware
+                "window_stride": 6,  # overlap = window_pages - window_stride
+                "stream": None,  # path to a stream json ({"doc_id","pages":[...]})
+                "image_root": None,  # page["image"] root; defaults to data.root
+                "out": None,  # optional output path; defaults to stdout
+            },
         }
     )
 
@@ -129,13 +136,15 @@ def get_config(cli=None, default_conf_file=None):
 
 def _validate(cfg):
     assert cfg.model.variant in VARIANTS, f"variant must be one of {VARIANTS}"
-    assert cfg.model.backbone in SUPPORTED_BACKBONES, (
-        f"backbone must be one of {SUPPORTED_BACKBONES}"
-    )
+    assert (
+        cfg.model.backbone in SUPPORTED_BACKBONES
+    ), f"backbone must be one of {SUPPORTED_BACKBONES}"
     assert cfg.model.seq_head.type in SEQ_HEAD_TYPES
     assert cfg.model.page_embed in PAGE_EMBED_MODES
     assert cfg.data.max_pages >= 1
     assert 1 <= cfg.data.window_stride <= cfg.data.max_pages
+    assert cfg.infer.window_pages >= 1
+    assert 1 <= cfg.infer.window_stride <= cfg.infer.window_pages
 
 
 def _derive(cfg):

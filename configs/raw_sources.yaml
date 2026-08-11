@@ -1,0 +1,23 @@
+# Maps raw, pre-OCR'd folders to PSS document types for `pss.data.ingest_raw`.
+#
+# Each entry's `path` is a glob (relative to `raw_root`) matched against top-level
+# (or nested) folders that contain an `images/` and an `ocr/` subfolder, e.g.:
+#   raw_dataset/docs_A/images/doc0001_1.jpg
+#   raw_dataset/docs_A/ocr/doc0001_1.txt      (lines: "x0,y0,x1,y1<TAB>text")
+#
+# This mapping is deliberately decoupled from the physical folder names: rename
+# nothing on disk, just add/edit an entry here when a new raw folder shows up or a
+# label needs correcting.
+#
+# Run:
+#   python -m pss.data.ingest_raw --config configs/raw_sources.yaml --out_root datasets/pss
+
+raw_root: raw_dataset
+
+sources:
+  - path: docs_A
+    type: invoice
+  - path: docs_B
+    type: receipt
+  # - path: docs_C/scanned/*
+  #   type: memo

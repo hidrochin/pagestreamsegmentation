@@ -11,7 +11,7 @@ MNDD + STP (stream level), and document-type macro-F1 (typing scored on the true
 segments, so it is decoupled from segmentation errors).
 """
 
-from collections import Counter, defaultdict
+from collections import Counter
 
 import torch
 from torch.utils.data import DataLoader
@@ -20,6 +20,7 @@ from pss import metrics
 from pss.config import get_config
 from pss.data import PSSDataset, collate_streams
 from pss.lightning_module import PSSLightningModule
+from pss.stitch import StreamAccumulator
 
 
 def load_weights(net, ckpt_path):
@@ -56,12 +57,7 @@ def main():
         collate_fn=collate_streams,
     )
 
-    # per-folder, per-page accumulators (averaged over overlapping windows)
-    bd_sum = defaultdict(dict)
-    ty_sum = defaultdict(dict)
-    cnt = defaultdict(dict)
-    bd_true = defaultdict(dict)
-    ty_true = defaultdict(dict)
+    acc = StreamAccumulator()
 
     with torch.no_grad():
         for batch in loader:
@@ -72,29 +68,18 @@ def main():
             out = net(gpu_batch)
             bl = out["boundary_logits"].float().cpu()
             tl = out["type_logits"].float().cpu()
-            by = batch["boundary_labels"]
-            ty = batch["type_labels"]
-
-            for i, meta in enumerate(batch["meta"]):
-                fid, start, length = meta["folder_id"], meta["start"], meta["length"]
-                for j in range(length):
-                    p = start + j
-                    bd_sum[fid][p] = bd_sum[fid].get(p, 0) + bl[i, j]
-                    ty_sum[fid][p] = ty_sum[fid].get(p, 0) + tl[i, j]
-                    cnt[fid][p] = cnt[fid].get(p, 0) + 1
-                    bd_true[fid][p] = int(by[i, j])
-                    ty_true[fid][p] = int(ty[i, j])
+            acc.add_batch(
+                batch["meta"], bl, tl, batch["boundary_labels"], batch["type_labels"]
+            )
 
     # stitch + score
     streams = []  # (pred_boundary, true_boundary) per stream
     type_pairs = []  # (true_type, pred_type) per document
     all_pred, all_true = [], []
 
-    for fid in bd_sum:
-        idxs = sorted(bd_sum[fid])
-        pred_bd = [int((bd_sum[fid][p] / cnt[fid][p]).argmax()) for p in idxs]
-        true_bd = [bd_true[fid][p] for p in idxs]
-        pred_ty = [int((ty_sum[fid][p] / cnt[fid][p]).argmax()) for p in idxs]
+    for fid in acc.stream_ids():
+        idxs, pred_bd, pred_ty = acc.stitch(fid)
+        true_bd = [acc.bd_true[fid][p] for p in idxs]
         streams.append((pred_bd, true_bd))
         all_pred.extend(pred_bd)
         all_true.extend(true_bd)
@@ -110,7 +95,7 @@ def main():
             docs.append(cur)
         for d in docs:
             pv = Counter(pred_ty[k] for k in d).most_common(1)[0][0]
-            tv = ty_true[fid][idxs[d[0]]]
+            tv = acc.ty_true[fid][idxs[d[0]]]
             type_pairs.append((tv, pv))
 
     prf = metrics.prf_from_preds(all_pred, all_true)
@@ -119,7 +104,9 @@ def main():
     type_f1 = metrics.type_macro_f1(type_pairs, cfg.model.n_types)
 
     print(f"\n=== PSS eval ({mode}, variant={cfg.model.variant}) ===")
-    print(f"boundary  P={prf['precision']:.4f}  R={prf['recall']:.4f}  F1={prf['f1']:.4f}  kappa={kappa:.4f}")
+    print(
+        f"boundary  P={prf['precision']:.4f}  R={prf['recall']:.4f}  F1={prf['f1']:.4f}  kappa={kappa:.4f}"
+    )
     print(f"stream    MNDD={sm['mndd']:.4f}  STP={sm['stp']:.4f}")
     print(f"typing    doc macro-F1={type_f1:.4f}")
 
