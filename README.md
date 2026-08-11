@@ -47,13 +47,26 @@ corpus of single, type-labeled documents, synthesize training streams
 (`python -m pss.evaluate`), and inspect confusion matrices/per-type metrics
 (`python -m pss.analyze`). Training/eval runs on CUDA, Apple Silicon (MPS), or CPU.
 
+### Decoder-based track (experimental)
+
+[pss/decoder/](pss/decoder/) fine-tunes an open-weight decoder LLM (Unsloth +
+TRL LoRA) to do PSS instead of the LayoutXLM encoder above, based on
+Heidenreich et al. 2024 (`papers/2408.11981v1.pdf`), who found fine-tuned
+decoder LLMs beat every encoder baseline on PSS. It's an experimental
+alternative — separate venv, config, and training loop, same underlying data
+and scoring — see [pss/decoder/README.md](pss/decoder/README.md). Requires a
+CUDA GPU (Unsloth has no CPU/MPS backend).
+
 ## Layout
 
 ```
 pss/               self-contained PSS package (data, model, train/eval, metrics)
+pss/decoder/        experimental decoder-LLM PSS track (see pss/decoder/README.md)
 configs/pss.yaml   primary experiment config
-papers/            reference papers (TABME; Wiedemann & Heyer)
-requirements.txt   modernized dependency stack
+configs/pss_decoder.yaml   primary decoder-track config
+papers/            reference papers (TABME; Wiedemann & Heyer; Heidenreich et al. decoder-LLM PSS)
+requirements.txt   modernized dependency stack (encoder pipeline)
+requirements-decoder.txt   decoder-track dependency stack (separate venv)
 ```
 
 ## Acknowledgements

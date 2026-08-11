@@ -1,0 +1,25 @@
+# Dependencies for the decoder-based PSS track (pss/decoder/), installed into a
+# SEPARATE venv (.venv-decoder) from the encoder pipeline's requirements.txt —
+# Unsloth pins its own torch/triton/xformers/bitsandbytes versions that may not
+# agree with the encoder env's torch==2.6.0 + source-built detectron2, and
+# Unsloth is CUDA-only (no MPS/CPU backend), unlike the encoder pipeline.
+#
+# Unsloth's own installer is version-matrix-aware (it picks the right
+# torch/xformers/bitsandbytes combo for your CUDA version) and is the
+# recommended install path — see https://docs.unsloth.ai/get-started/installation
+# for the exact `pip install "unsloth[...] @ git+..."` selector string for your
+# CUDA version. This file pins reasonable floors for `uv pip install -r
+# requirements-decoder.txt` as a starting point; if Unsloth's installer
+# resolves different exact versions, prefer those over these pins.
+
+torch>=2.4
+transformers>=4.51
+accelerate>=1.0
+peft>=0.13
+trl>=0.12
+bitsandbytes>=0.44
+datasets>=3.0
+unsloth
+unsloth_zoo
+omegaconf>=2.3
+tensorboard>=2.14

@@ -10,20 +10,15 @@ The tokenizer aligns subword boxes automatically and inserts the special-token
 boxes ([CLS]->[0,0,0,0], [SEP]->[1000,1000,1000,1000]).
 """
 
-import json
-import os
-
 import torch
 from torch.utils.data.dataset import Dataset
 
 from pss.data.page_codec import encode_page
+from pss.data.resolve import DocCache, load_json, read_class_names, read_index
 from pss.data.windowing import build_stream_windows
 from pss.model.page_encoder import build_image_processor, build_tokenizer
 
-
-def read_class_names(root):
-    with open(os.path.join(root, "class_names.txt"), encoding="utf-8") as fp:
-        return [ln.strip() for ln in fp if ln.strip()]
+__all__ = ["PSSDataset", "read_class_names"]
 
 
 class PSSDataset(Dataset):
@@ -43,23 +38,11 @@ class PSSDataset(Dataset):
         self.class_names = read_class_names(self.root)
         self.type2id = {c: i for i, c in enumerate(self.class_names)}
 
-        self.folders = self._read_index()  # list[(folder_relpath, n_pages)]
+        self.folders = read_index(self.root, self.mode)  # list[(folder_relpath, n_pages)]
         self.windows = self._build_windows()  # list[(folder_idx, start, length)]
-        self._doc_cache = {}
+        self._doc_cache = DocCache(self.root)
 
     # -- indexing ----------------------------------------------------------------
-    def _read_index(self):
-        path = os.path.join(self.root, f"preprocessed_files_{self.mode}.txt")
-        folders = []
-        with open(path, encoding="utf-8") as fp:
-            for line in fp:
-                line = line.strip()
-                if not line:
-                    continue
-                rel, n = line.split("\t")
-                folders.append((rel, int(n)))
-        return folders
-
     def _build_windows(self):
         windows = []
         for fi, (_, n) in enumerate(self.folders):
@@ -71,18 +54,8 @@ class PSSDataset(Dataset):
         return len(self.windows)
 
     # -- loading -----------------------------------------------------------------
-    def _load_json(self, relpath):
-        with open(os.path.join(self.root, relpath), encoding="utf-8") as fp:
-            return json.load(fp)
-
-    def _doc(self, doc_id):
-        if doc_id not in self._doc_cache:
-            self._doc_cache[doc_id] = self._load_json(f"docs/{doc_id}.json")
-        return self._doc_cache[doc_id]
-
     def _encode_page(self, page_ref):
-        doc = self._doc(page_ref["doc_id"])
-        page = doc["pages"][page_ref["page_idx"]]
+        page = self._doc_cache.page(page_ref)
         enc = encode_page(
             self.tokenizer, self.image_processor, page, self.root, self.max_seq_length
         )
@@ -93,7 +66,7 @@ class PSSDataset(Dataset):
     def __getitem__(self, idx):
         fi, start, length = self.windows[idx]
         rel, _ = self.folders[fi]
-        folder = self._load_json(rel)
+        folder = load_json(self.root, rel)
         page_refs = folder["pages"][start : start + length]
 
         pages = [self._encode_page(pr) for pr in page_refs]

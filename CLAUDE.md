@@ -147,6 +147,12 @@ training and production windowing can never drift apart. Page → tensor encodin
 (tokenizer + image processor) is likewise shared, in
 [pss/data/page_codec.py](pss/data/page_codec.py)`::encode_page`.
 
+The pure-stdlib "which pages does this folder/window refer to" lookup (parsing
+`preprocessed_files_*.txt`, resolving a folder's page refs to their source
+`docs/<doc_id>.json` pages) lives in
+[pss/data/resolve.py](pss/data/resolve.py) — `PSSDataset` uses it, and so does
+the decoder track below, without either pulling in the other's model stack.
+
 ## Architecture
 
 The model is assembled from a **shared page encoder** + a **context model over pages**
@@ -257,3 +263,21 @@ global). The primary experiment config is [configs/pss.yaml](configs/pss.yaml).
   `{workspace}/checkpoints/{run_id}/` — `best-epoch??-f1?.????.ckpt` (highest
   `val_bd_f1`) and `last.ckpt` — each auto-exported to a plain-PyTorch `.pth`
   sibling (`pss/export_pth.py`) when training finishes.
+
+## Decoder-based track (experimental)
+
+[pss/decoder/](pss/decoder/) fine-tunes an open-weight decoder LLM (Unsloth +
+TRL LoRA — `unsloth/Qwen3-8B-Instruct` text-only, or
+`unsloth/Qwen2.5-VL-7B-Instruct` text+vision) to do PSS, based on and extending
+Heidenreich et al. (arXiv:2408.11981, `papers/2408.11981v1.pdf`), who found
+fine-tuned decoder LLMs beat every encoder baseline on PSS by a wide margin.
+It's an **experimental alternative** next to the pipeline above (which stays
+default) — separate venv (`.venv-decoder`, `requirements-decoder.txt`,
+Unsloth is CUDA-only so this can't run on CPU/MPS), separate config schema
+(`pss/decoder/config.py`, not threaded through `pss/config.py::_validate`),
+separate training loop (TRL `SFTTrainer`, not `PSSLightningModule`). It reads
+the exact same `docs/*.json`/`folders/*.json` (via `pss/data/resolve.py`) and
+scores with the exact same `pss/metrics.py`, so both tracks report directly
+comparable numbers. Full setup, usage, and the TABME++ sanity-check procedure
+(**run this before trusting any result on your own corpus**) are in
+[pss/decoder/README.md](pss/decoder/README.md).

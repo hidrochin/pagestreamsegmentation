@@ -1,0 +1,44 @@
+# Primary decoder-track config: text-only, whole-window joint context.
+# See pss/decoder/config.py for every leaf and its default; any leaf here is
+# also CLI-overridable with dot-notation, e.g.:
+#   python -m pss.decoder.train --config=configs/pss_decoder.yaml decoder.context_mode=pair
+#
+# The 2x2 comparison this repo's decoder track is built to run (see the plan /
+# pss/decoder/README.md "Comparison" section):
+#   decoder.modality=text   decoder.context_mode=pair    (paper-replication baseline)
+#   decoder.modality=text   decoder.context_mode=window  (this file's default)
+#   decoder.modality=vision decoder.context_mode=pair
+#   decoder.modality=vision decoder.context_mode=window
+# (vision modality needs pss/decoder/train.py's vision data path finished first
+# — see its NotImplementedError note.)
+
+workspace: ./pss_runs/decoder_i1_qwen3
+
+data:
+  root: ./datasets/pss
+  max_pages: 32       # match pss.yaml's data.max_pages for apples-to-apples windows
+  window_stride: 24
+
+decoder:
+  modality: text
+  context_mode: window
+  base_model: unsloth/Qwen3-8B-Instruct
+  max_seq_length: 8192
+  load_in_4bit: true
+  lora:
+    r: 16
+    alpha: 16
+    dropout: 0.0
+
+train:
+  batch_size: 4        # per-device; window-mode prompts are long, keep this conservative
+  grad_accum: 4
+  lr: 3.0e-5
+  max_steps: 20000
+  warmup_steps: 200
+  save_every: 1000
+  eval_every: 1000
+
+infer:
+  batch_size: 4
+  max_new_tokens: 1024   # window mode: ~1 short JSON object per page, scale with max_pages

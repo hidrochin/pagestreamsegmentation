@@ -103,10 +103,24 @@ and the `"net."` key prefix, so the result loads with plain
 - Also evaluate on public **TABME**/**Tobacco800** to compare against published
   numbers (F1 ~0.95 / acc ~0.92) before trusting your own held-out set.
 
+## Decoder-based track (experimental)
+
+[pss/decoder/](decoder/README.md) fine-tunes an open-weight decoder LLM
+(Unsloth + TRL LoRA — `Qwen3-8B-Instruct` text-only, or `Qwen2.5-VL-7B-Instruct`
+text+vision) to do PSS, based on and extending Heidenreich et al.
+(arXiv:2408.11981, `papers/2408.11981v1.pdf`), who found fine-tuned decoder
+LLMs beat every encoder baseline on PSS by a wide margin. It reads the exact
+same `docs/*.json`/`folders/*.json` and scores with the exact same
+`pss/metrics.py` as the pipeline above, but is an **experimental alternative**
+— separate venv (`.venv-decoder`, `requirements-decoder.txt`, Unsloth is
+CUDA-only), separate config (`pss/decoder/config.py`), separate training loop
+(TRL `SFTTrainer`). Full setup/usage/verification in
+[pss/decoder/README.md](decoder/README.md).
+
 ## Layout
 ```
 pss/config.py                 OmegaConf config (defaults + --config + CLI)
-pss/data/                     render, ocr_ingest, synthesize (TABME), dataset, collate
+pss/data/                     render, ocr_ingest, synthesize (TABME), dataset, collate, resolve
 pss/model/page_encoder.py     shared LayoutXLM encoder (+ tokenizer/image-proc factories)
 pss/model/sequence_heads.py   TemporalCNN / Transformer over pages; boundary + type heads
 pss/model/variants.py         B0 / B1 / I1 assembly + loss
@@ -115,5 +129,7 @@ pss/train.py, pss/evaluate.py entry points (train / stitched-stream eval)
 pss/analyze.py                confusion-matrix/heatmap diagnostics (built on evaluate.py)
 pss/export_pth.py             .ckpt -> plain-PyTorch .pth state dict
 pss/metrics.py                P/R/F1, kappa, MNDD, STP, type macro-F1
+pss/decoder/                  experimental decoder-LLM PSS track (see pss/decoder/README.md)
 configs/pss.yaml              primary experiment config
+configs/pss_decoder.yaml      primary decoder-track config
 ```
