@@ -21,8 +21,19 @@ Tokenizer/image-processor factories live here too so the data layer and the mode
 share one source for the backbone name and preprocessing.
 """
 
+import os
+
 import torch
 from torch import nn
+
+# Cache downloaded HF weights (LayoutXLM, ~2.8GB) inside the repo instead of the
+# user's home cache, so they survive independently of any global cache cleanup and
+# don't get silently re-fetched. gitignored (pretrained_models/) — never commit
+# these. Respects an explicit HF_HOME if the environment already sets one.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+os.environ.setdefault(
+    "HF_HOME", os.path.join(_REPO_ROOT, "pretrained_models", "hf_cache")
+)
 
 
 def build_tokenizer(backbone_name):

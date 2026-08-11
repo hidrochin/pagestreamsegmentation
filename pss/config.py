@@ -15,6 +15,7 @@ Any leaf can be overridden on the CLI with dot-notation, e.g.:
 """
 
 import os
+import time
 
 from omegaconf import OmegaConf
 
@@ -36,6 +37,7 @@ def default_config():
         {
             "seed": 42,
             "workspace": "./pss_runs/exp",  # checkpoints + tb logs derived from this
+            "run_id": None,  # subdir name for this run's checkpoints/logs; None => timestamp
             "model": {
                 "backbone": "microsoft/layoutxlm-base",
                 "variant": "I1",  # B0 | B1 | I1
@@ -80,6 +82,12 @@ def default_config():
                 "stream": None,  # path to a stream json ({"doc_id","pages":[...]})
                 "image_root": None,  # page["image"] root; defaults to data.root
                 "out": None,  # optional output path; defaults to stdout
+            },
+            "analyze": {  # pss.analyze — confusion-matrix/heatmap diagnostics
+                "out_dir": None,  # defaults to {workspace}/analysis
+            },
+            "export": {  # pss.export_pth — .ckpt -> plain torch .pth state dict
+                "out": None,  # defaults to pretrained_model_file with .pth extension
             },
         }
     )
@@ -173,9 +181,16 @@ def _encoder_output_dim(cfg):
 
 
 def _derive(cfg):
-    """Set derived paths and split the global batch size across GPUs (if any)."""
-    cfg.save_weight_dir = os.path.join(cfg.workspace, "checkpoints")
-    cfg.tensorboard_dir = os.path.join(cfg.workspace, "tensorboard_logs")
+    """Set derived paths and split the global batch size across GPUs (if any).
+
+    Checkpoints/logs are nested under ``run_id`` (a timestamp by default, taken
+    once when training starts) so successive training runs against the same
+    ``workspace`` never overwrite each other's checkpoints — pass ``run_id=...``
+    explicitly to reuse/inspect a specific past run's directory."""
+    if cfg.run_id is None:
+        cfg.run_id = time.strftime("%Y%m%d-%H%M%S")
+    cfg.save_weight_dir = os.path.join(cfg.workspace, "checkpoints", cfg.run_id)
+    cfg.tensorboard_dir = os.path.join(cfg.workspace, "tensorboard_logs", cfg.run_id)
 
     n_gpus = _gpu_count() if cfg.train.accelerator == "gpu" else 0
     if n_gpus > 1:

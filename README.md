@@ -30,16 +30,22 @@ integrated visual backbone worth its cost.
 
 ## Quickstart
 
+Use `uv` for environment/package management (see [CLAUDE.md](CLAUDE.md) for the
+full uv commands, including the Apple Silicon detectron2 build flags):
+
 ```bash
-pip install -r requirements.txt          # torch 2.6 / transformers 4.53 / lightning 2.5
-# LayoutLMv2/XLM's visual backbone (build from source; needs a CUDA toolkit):
-pip install 'git+https://github.com/facebookresearch/detectron2.git'
+uv venv .venv --python 3.11
+uv pip install --python .venv/bin/python -r requirements.txt   # torch 2.6 / transformers 4.53 / lightning 2.5
+# LayoutLMv2/XLM's visual backbone (build from source):
+uv pip install --python .venv/bin/python --no-build-isolation \
+    'git+https://github.com/facebookresearch/detectron2.git'
 ```
 
 Then follow **[pss/README.md](pss/README.md)** for the full workflow: prepare a
 corpus of single, type-labeled documents, synthesize training streams
-(`python -m pss.data.synthesize`), train (`python -m pss.train`), and evaluate
-(`python -m pss.evaluate`). A CUDA GPU is required for training.
+(`python -m pss.data.synthesize`), train (`python -m pss.train`), evaluate
+(`python -m pss.evaluate`), and inspect confusion matrices/per-type metrics
+(`python -m pss.analyze`). Training/eval runs on CUDA, Apple Silicon (MPS), or CPU.
 
 ## Layout
 

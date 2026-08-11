@@ -19,16 +19,38 @@ pairs — plus the rendered page image. Everything lives in the self-contained
 ## Environment & commands
 
 The stack is modernized (see [requirements.txt](requirements.txt)): `torch==2.6.0`,
-`torchvision==0.21.0`, `transformers>=4.53,<4.54`, `pytorch-lightning>=2.5.1`. A CUDA
-GPU is required for real training/eval — LayoutXLM's visual backbone is
-**detectron2**, which has no prebuilt wheels for torch 2.6 and must be built from
-source. (`pss/train.py` has a CPU fallback for smoke tests, but detectron2 is still
-imported for the image path.)
+`torchvision==0.21.0`, `transformers>=4.53,<4.54`, `pytorch-lightning>=2.5.1`,
+`matplotlib>=3.8` (for `pss.analyze`). Training/eval works on **CUDA, Apple Silicon
+(MPS), or CPU** — `pss/train.py::_select_accelerator` and the device-selection lines
+in `pss/evaluate.py`/`pss/infer.py` all prefer CUDA, then fall back to MPS, then CPU.
+LayoutXLM's visual backbone is **detectron2**, which has no prebuilt wheels for
+torch 2.6 and must be built from source on every platform (CUDA or Apple Silicon).
+
+**Use `uv` for all environment/package management in this repo** (not raw
+pip/venv). A persistent `.venv` lives at the repo root and is gitignored — reuse
+it across sessions rather than recreating it, so the ~2.8GB detectron2 build and
+LayoutXLM download aren't repeated:
 
 ```bash
-pip install -r requirements.txt
-pip install 'git+https://github.com/facebookresearch/detectron2.git'   # visual backbone
+uv venv .venv --python 3.11
+uv pip install --python .venv/bin/python -r requirements.txt
+# --no-build-isolation is required so the detectron2 build sees the already-installed torch
+CC=clang CXX=clang++ ARCHFLAGS="-arch arm64" \
+    uv pip install --python .venv/bin/python --no-build-isolation \
+    'git+https://github.com/facebookresearch/detectron2.git'   # Apple Silicon
+# on CUDA machines: drop the CC/CXX/ARCHFLAGS env vars, keep --no-build-isolation
 ```
+
+On Apple Silicon, the **I1+transformer** variant additionally needs
+`PYTORCH_ENABLE_MPS_FALLBACK=1` set — one op used by `nn.TransformerEncoder`
+(`_nested_tensor_from_mask_left_aligned`) isn't implemented for MPS yet and falls
+back to CPU for just that op; everything else runs on MPS.
+
+HF model weights (LayoutXLM, ~2.8GB) are cached under `pretrained_models/hf_cache/`
+**inside the repo** — `pss/model/page_encoder.py` sets `HF_HOME` there by default
+(unless the environment already sets one). This directory is gitignored and must
+never be committed, but keeping it repo-local means it survives independently of
+the user's home cache and isn't silently re-downloaded after cache cleanups.
 
 Everything is driven by a config file + OmegaConf CLI overrides:
 
@@ -37,27 +59,44 @@ Everything is driven by a config file + OmegaConf CLI overrides:
 python -m pss.data.synthesize --root datasets/pss --lambda 5 \
     --n_train 100000 --n_val 5000 --n_test 5000 --seed 42
 
-# Train (I1 is the default/primary variant)
+# Train (I1 is the default/primary variant). Checkpoints + TB logs land under
+# {workspace}/checkpoints/{run_id}/ and {workspace}/tensorboard_logs/{run_id}/ —
+# run_id defaults to a timestamp so repeated runs never clobber each other's
+# checkpoints. Two Lightning checkpoints are kept per run (best-by-val_bd_f1 and
+# last), each auto-exported to a plain-PyTorch .pth sibling (see pss.export_pth
+# below); both paths print when training finishes.
 python -m pss.train --config=configs/pss.yaml
 python -m pss.train --config=configs/pss.yaml model.variant=B0     # baseline
 python -m pss.train --config=configs/pss.yaml model.seq_head.type=transformer  # I1 ablation
 
 # Evaluate a checkpoint (full stream stitching)
 python -m pss.evaluate --config=configs/pss.yaml eval_mode=test \
-    pretrained_model_file=pss_runs/i1_layoutxlm/checkpoints/last.ckpt
+    pretrained_model_file=pss_runs/i1_layoutxlm/checkpoints/<run_id>/last.ckpt
+
+# Visual model-behavior diagnostics: boundary + document-type confusion matrices,
+# per-type P/R/F1 bars, written as PNGs under analyze.out_dir (default {workspace}/analysis)
+python -m pss.analyze --config=configs/pss.yaml eval_mode=test \
+    pretrained_model_file=pss_runs/i1_layoutxlm/checkpoints/<run_id>/last.ckpt
+
+# Export a Lightning .ckpt to a plain-PyTorch .pth state dict (no lightning/optimizer
+# state, no "net." key prefix) — also run automatically at the end of pss.train
+python -m pss.export_pth --config=configs/pss.yaml \
+    pretrained_model_file=pss_runs/i1_layoutxlm/checkpoints/<run_id>/last.ckpt
 
 # Ingest a raw corpus that already has OCR sidecar files (see Data preparation)
 python -m pss.data.ingest_raw --config configs/raw_sources.yaml --out_root datasets/pss
 
 # Production inference: fixed-width sliding window, no ground truth
 python -m pss.infer --config=configs/pss.yaml \
-    pretrained_model_file=pss_runs/i1_layoutxlm/checkpoints/last.ckpt \
+    pretrained_model_file=pss_runs/i1_layoutxlm/checkpoints/<run_id>/last.ckpt \
     infer.stream=stream.json infer.window_pages=10 infer.window_stride=6
 ```
 
 Any config leaf is CLI-overridable with dot-notation, e.g. `train.batch_size=8
 model.variant=B1 data.max_pages=48`. There is no unit-test suite; "evaluation" means
-running `pss.evaluate` and reading the metrics it prints. Code style: `isort` + `black`.
+running `pss.evaluate` and reading the metrics it prints (`pss.analyze` complements
+this with visual per-type/per-boundary-class diagnostics, useful for spotting which
+document types the model handles poorly). Code style: `isort` + `black`.
 
 ## Data preparation
 
@@ -127,9 +166,11 @@ The model is assembled from a **shared page encoder** + a **context model over p
   Also exports `build_tokenizer` (AutoTokenizer → SentencePiece for layoutxlm) and
   `build_image_processor` (`LayoutLMv2ImageProcessor`, `apply_ocr=False`).
 - **[pss/model/sequence_heads.py](pss/model/sequence_heads.py)** — `TemporalCNN`
-  (Conv1d over the page axis, `padding_mode="circular"`, ~5 layers, kernel 3, dropout
-  0.2 — TABME's design), `TransformerOverPages` (ablation), and `BoundaryHead` /
-  `TypeHead`.
+  (Conv1d over the page axis, zero-padded, ~5 layers, kernel 3, dropout 0.2 —
+  TABME's design; `page_mask` is re-applied after every layer so a padded page's
+  bias-only activations can never leak into a real page's receptive field),
+  `TransformerOverPages` (ablation, masks padding via `src_key_padding_mask`), and
+  `BoundaryHead` / `TypeHead`.
 - **[pss/model/variants.py](pss/model/variants.py)** — `PSSModel` + `build_model(cfg)`.
   Works on a unified batch dict `[B, P, ...]`; `encode()` folds `[B,P,...]→[B*P,...]`
   through the encoder. Loss = class-weighted boundary CrossEntropy (`ignore_index=-100`,
@@ -139,8 +180,25 @@ The model is assembled from a **shared page encoder** + a **context model over p
   and `on_validation_epoch_end` logs `val_bd_f1` (the monitored metric), P/R, kappa,
   type acc. Optimizer: Adam @ `train.lr` (TABME used 5e-5).
 - **[pss/train.py](pss/train.py)** / **[pss/evaluate.py](pss/evaluate.py)** — entry
-  points. Training early-stops on `val_bd_f1` (patience `train.early_stop_patience`).
-  Eval stitches overlapping windows back per stream before scoring.
+  points. Training early-stops on `val_bd_f1` (patience `train.early_stop_patience`)
+  and, once `trainer.fit` returns, auto-exports both the best and last checkpoint to
+  `.pth` via `pss/export_pth.py`. Eval stitches overlapping windows back per stream
+  before scoring; `evaluate.py::load_weights` raises on any checkpoint/model
+  mismatch by default (`allow_partial_load=true` to load anyway) — important during
+  architecture sweeps, where a silent partial load would produce misleading numbers
+  instead of an error. `evaluate.py::collect_predictions` is the shared
+  stitching/prediction routine reused by `pss/analyze.py`, so its diagnostics always
+  match what `pss.evaluate` scores.
+- **[pss/analyze.py](pss/analyze.py)** — visual diagnostics for a trained
+  checkpoint: boundary confusion matrix, document-type confusion matrix, per-type
+  P/R/F1 bars (PNGs under `analyze.out_dir`). Built on top of
+  `evaluate.py::collect_predictions`, not a separate scoring path.
+- **[pss/export_pth.py](pss/export_pth.py)** — `export_state_dict(net, ckpt_path,
+  out_path=None)` converts a Lightning `.ckpt` to a plain-PyTorch `.pth` state dict
+  (no optimizer/Lightning state, no `"net."` key prefix) — loadable with
+  `net.load_state_dict(torch.load(path, weights_only=True))` without a
+  pytorch-lightning dependency. Called automatically by `pss/train.py`; also runnable
+  standalone against any past checkpoint.
 - **[pss/stitch.py](pss/stitch.py)** — `StreamAccumulator`: per-absolute-page-index
   logit averaging over overlapping windows, shared by `pss/evaluate.py` (scores
   against ground truth) and `pss/infer.py` (production, no labels).
@@ -158,10 +216,12 @@ The model is assembled from a **shared page encoder** + a **context model over p
 
 `pss/config.py::get_config()` merges three OmegaConf layers: built-in
 `default_config()` → the `--config` yaml → CLI dotlist overrides. `_validate` checks
-the variant/backbone/seq-head enums; `_derive` sets `save_weight_dir` /
-`tensorboard_dir` from `workspace` and **divides `train`/`val` batch size by the GPU
-count** (config batch size is global). The primary experiment config is
-[configs/pss.yaml](configs/pss.yaml).
+the variant/backbone/seq-head enums (including that `seq_head.n_heads` divides the
+encoder output dim for the transformer seq-head) and warns if
+`infer.window_pages != data.max_pages`; `_derive` sets `run_id` (a timestamp, unless
+passed explicitly), `save_weight_dir` / `tensorboard_dir` from `workspace/…/run_id`,
+and **divides `train`/`val` batch size by the GPU count** (config batch size is
+global). The primary experiment config is [configs/pss.yaml](configs/pss.yaml).
 
 ### Conventions (important)
 
@@ -187,3 +247,13 @@ count** (config batch size is global). The primary experiment config is
   has only ever seen that context length.
 - **Precision**: Lightning 2.x uses precision **strings** (`"16-mixed"`, `"32-true"`),
   not the old int `16`/`32`.
+- **Accelerator selection**: `train.accelerator="gpu"` resolves CUDA → Apple MPS →
+  CPU (`pss/train.py::_select_accelerator`; `pss/evaluate.py`/`pss/infer.py` mirror
+  the same CUDA→MPS→CPU device-selection order). MPS forces full precision
+  (`"32-true"`, single device, no DDP) since CUDA-style mixed precision doesn't
+  apply; see the `PYTORCH_ENABLE_MPS_FALLBACK=1` note above for the I1+transformer
+  variant on Apple Silicon.
+- **Checkpoints**: two Lightning checkpoints kept per run under
+  `{workspace}/checkpoints/{run_id}/` — `best-epoch??-f1?.????.ckpt` (highest
+  `val_bd_f1`) and `last.ckpt` — each auto-exported to a plain-PyTorch `.pth`
+  sibling (`pss/export_pth.py`) when training finishes.

@@ -15,14 +15,26 @@ CNN over the page sequence (TABME-style). See the approved plan and `papers/`
 ## Install
 Modernized stack: `torch==2.6.0`, `torchvision==0.21.0`, `transformers>=4.53,<4.54`
 (ships `LayoutLMv2Model` + `LayoutXLMTokenizer`/`ImageProcessor`), `pytorch-lightning>=2.5.1`.
+Use **uv** for environment/package management, not raw pip/venv:
 ```bash
-pip install -r requirements.txt          # includes sentencepiece + PyMuPDF
-# LayoutLMv2/XLM visual backbone (detectron2) — build from source (needs a CUDA toolkit):
-pip install 'git+https://github.com/facebookresearch/detectron2.git'
+uv venv .venv --python 3.11
+uv pip install --python .venv/bin/python -r requirements.txt   # includes sentencepiece + PyMuPDF
+# LayoutLMv2/XLM visual backbone (detectron2) — build from source, needs --no-build-isolation
+# so it can see the already-installed torch:
+CC=clang CXX=clang++ ARCHFLAGS="-arch arm64" \
+    uv pip install --python .venv/bin/python --no-build-isolation \
+    'git+https://github.com/facebookresearch/detectron2.git'   # Apple Silicon
+# on CUDA machines: drop CC/CXX/ARCHFLAGS, keep --no-build-isolation
 ```
-A CUDA GPU is required for training (the LayoutXLM visual backbone needs it). If the
-detectron2 source build fails against torch 2.6, torch 2.4.x is the safest fallback
-(`torch==2.4.1` / `torchvision==0.19.1`, still compatible with transformers 4.53).
+Training/eval runs on **CUDA, Apple Silicon (MPS), or CPU** (`pss/train.py`
+auto-detects; `PYTORCH_ENABLE_MPS_FALLBACK=1` is needed for the I1+transformer
+variant on Apple Silicon — one op falls back to CPU). If the detectron2 source
+build fails against torch 2.6, torch 2.4.x is the safest fallback (`torch==2.4.1` /
+`torchvision==0.19.1`, still compatible with transformers 4.53).
+
+HF model weights are cached under `pretrained_models/hf_cache/` inside the repo
+(gitignored — never commit them) instead of the user's home cache, so they persist
+across environment rebuilds.
 
 ## Data prep
 The corpus is your **single, type-labeled documents**. Build the on-disk layout
@@ -49,15 +61,42 @@ python -m pss.train --config=configs/pss.yaml model.variant=B1     # baseline
 python -m pss.train --config=configs/pss.yaml model.seq_head.type=transformer  # I1 ablation
 ```
 Adam @ lr 5e-5, ≤30 epochs, early-stop patience 5 on `val_bd_f1` (TABME protocol).
-Best checkpoint + TB logs under `{workspace}/`. Any config leaf is CLI-overridable.
+Checkpoints + TB logs land under `{workspace}/checkpoints/{run_id}/` and
+`{workspace}/tensorboard_logs/{run_id}/` — `run_id` defaults to a timestamp so
+repeated runs never overwrite each other. Two checkpoints are kept per run: best
+(by `val_bd_f1`) and last, each auto-exported to a plain-PyTorch `.pth` sibling
+(no Lightning dependency needed to load it — see **Export** below). Any config
+leaf is CLI-overridable.
 
 ## Evaluate (full stream stitching)
 ```bash
 python -m pss.evaluate --config=configs/pss.yaml eval_mode=test \
-    pretrained_model_file=pss_runs/i1_layoutxlm/checkpoints/last.ckpt
+    pretrained_model_file=pss_runs/i1_layoutxlm/checkpoints/<run_id>/last.ckpt
 ```
 Reports breaking-point **P/R/F1 + kappa** (page level), **MNDD + STP** (stream
-level), and **document-type macro-F1** (scored on true segments).
+level), and **document-type macro-F1** (scored on true segments). Checkpoint
+loading is strict by default — a `model.variant`/`page_embed`/`seq_head.type`
+mismatch raises instead of silently partial-loading (`allow_partial_load=true` to
+override).
+
+## Analyze (confusion matrices, per-type P/R/F1)
+```bash
+python -m pss.analyze --config=configs/pss.yaml eval_mode=test \
+    pretrained_model_file=pss_runs/i1_layoutxlm/checkpoints/<run_id>/last.ckpt
+```
+Writes `boundary_confusion.png`, `type_confusion.png`, `type_prf.png` under
+`analyze.out_dir` (default `{workspace}/analysis`) — which document types the
+model confuses, and whether boundary errors skew toward false positives or false
+negatives. Scores the exact same predictions as `pss.evaluate`.
+
+## Export (.ckpt -> .pth)
+```bash
+python -m pss.export_pth --config=configs/pss.yaml \
+    pretrained_model_file=pss_runs/i1_layoutxlm/checkpoints/<run_id>/last.ckpt
+```
+Also run automatically at the end of `pss.train`. Strips Lightning/optimizer state
+and the `"net."` key prefix, so the result loads with plain
+`net.load_state_dict(torch.load(path, weights_only=True))`.
 
 ## Sanity checks
 - Overfit ~50 synthetic folders (loss→0, bd F1→1) to prove wiring.
@@ -72,7 +111,9 @@ pss/model/page_encoder.py     shared LayoutXLM encoder (+ tokenizer/image-proc f
 pss/model/sequence_heads.py   TemporalCNN / Transformer over pages; boundary + type heads
 pss/model/variants.py         B0 / B1 / I1 assembly + loss
 pss/lightning_module.py       training/validation loop + window-level metrics
-pss/train.py, pss/evaluate.py entry points
+pss/train.py, pss/evaluate.py entry points (train / stitched-stream eval)
+pss/analyze.py                confusion-matrix/heatmap diagnostics (built on evaluate.py)
+pss/export_pth.py             .ckpt -> plain-PyTorch .pth state dict
 pss/metrics.py                P/R/F1, kappa, MNDD, STP, type macro-F1
 configs/pss.yaml              primary experiment config
 ```

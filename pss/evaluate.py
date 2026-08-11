@@ -46,22 +46,24 @@ def load_weights(net, ckpt_path, strict=True):
         print(msg)
 
 
-def main():
-    cfg = get_config()
-    mode = cfg.get("eval_mode", "test")
-    device = (
-        "cuda"
-        if torch.cuda.is_available()
-        else "mps" if torch.backends.mps.is_available() else "cpu"
-    )
-
+def load_eval_net(cfg, device):
+    """Build the model, load a checkpoint (strict by default), move to device+eval.
+    Shared by evaluate.py and analyze.py so both score the exact same weights."""
     module = PSSLightningModule(cfg)
     net = module.net
     load_weights(
         net, cfg.pretrained_model_file, strict=not cfg.get("allow_partial_load", False)
     )
     net.to(device).eval()
+    return net
 
+
+def collect_predictions(cfg, net, device, mode):
+    """Run `net` over `mode`'s stitched streams. Returns a dict with everything
+    evaluate.py/analyze.py need: per-stream (pred, true) boundary sequences,
+    per-document (true, pred) type pairs (typed on the TRUE segmentation, so
+    typing is decoupled from segmentation errors), and flat page-level
+    boundary predictions/labels."""
     ds = PSSDataset(cfg, mode)
     loader = DataLoader(
         ds,
@@ -86,7 +88,6 @@ def main():
                 batch["meta"], bl, tl, batch["boundary_labels"], batch["type_labels"]
             )
 
-    # stitch + score
     streams = []  # (pred_boundary, true_boundary) per stream
     type_pairs = []  # (true_type, pred_type) per document
     all_pred, all_true = [], []
@@ -111,6 +112,28 @@ def main():
             pv = Counter(pred_ty[k] for k in d).most_common(1)[0][0]
             tv = acc.ty_true[fid][idxs[d[0]]]
             type_pairs.append((tv, pv))
+
+    return {
+        "streams": streams,
+        "type_pairs": type_pairs,
+        "all_pred": all_pred,
+        "all_true": all_true,
+    }
+
+
+def main():
+    cfg = get_config()
+    mode = cfg.get("eval_mode", "test")
+    device = (
+        "cuda"
+        if torch.cuda.is_available()
+        else "mps" if torch.backends.mps.is_available() else "cpu"
+    )
+
+    net = load_eval_net(cfg, device)
+    result = collect_predictions(cfg, net, device, mode)
+    all_pred, all_true = result["all_pred"], result["all_true"]
+    streams, type_pairs = result["streams"], result["type_pairs"]
 
     prf = metrics.prf_from_preds(all_pred, all_true)
     kappa = metrics.kappa_from_preds(all_pred, all_true)

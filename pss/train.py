@@ -5,9 +5,16 @@ Train a PSS model.
     python -m pss.train --config=configs/pss.yaml model.variant=B0
     python -m pss.train --config=configs/pss.yaml model.seq_head.type=transformer
 
-Checkpoints + TB logs go under {workspace}/. Best checkpoint is selected on
-val breaking-point F1; training stops early after `early_stop_patience` epochs
-without improvement (TABME protocol).
+Checkpoints + TB logs go under {workspace}/checkpoints/{run_id}/ and
+{workspace}/tensorboard_logs/{run_id}/, where `run_id` defaults to a timestamp
+taken at the start of this run (pss/config.py::_derive) so repeated training runs
+against the same workspace never clobber each other's checkpoints. Two Lightning
+checkpoints are kept per run: `best-epoch??-f1?.????.ckpt` (highest val_bd_f1) and
+`last.ckpt` (final epoch) — both paths are printed when training finishes, and a
+plain-PyTorch `.pth` state dict (see pss/export_pth.py) is exported alongside each
+one automatically. Best checkpoint is selected on val breaking-point F1; training
+stops early after `early_stop_patience` epochs without improvement (TABME
+protocol).
 """
 
 import os
@@ -20,6 +27,7 @@ from torch.utils.data import DataLoader
 
 from pss.config import get_config
 from pss.data import PSSDataset, collate_streams
+from pss.export_pth import export_state_dict
 from pss.lightning_module import PSSLightningModule
 from pss.model.page_encoder import build_image_processor, build_tokenizer
 
@@ -43,6 +51,7 @@ def _select_accelerator(cfg):
 def main():
     cfg = get_config()
     print(cfg)
+    print(f"[train] run_id={cfg.run_id}  checkpoints -> {cfg.save_weight_dir}")
 
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     seed_everything(cfg.seed)
@@ -78,7 +87,8 @@ def main():
         mode="max",
         save_top_k=1,
         save_last=True,
-        filename="{epoch}-{val_bd_f1:.4f}",
+        filename="best-epoch{epoch:02d}-f1{val_bd_f1:.4f}",
+        auto_insert_metric_name=False,
     )
     early = EarlyStopping(
         monitor="val_bd_f1", mode="max", patience=cfg.train.early_stop_patience
@@ -99,6 +109,17 @@ def main():
         logger=logger,
     )
     trainer.fit(module, train_loader, val_loader)
+
+    print(f"[train] best checkpoint (val_bd_f1={ckpt.best_model_score}): {ckpt.best_model_path}")
+    print(f"[train] last checkpoint: {ckpt.last_model_path}")
+
+    # plain-PyTorch .pth siblings (no Lightning/optimizer state) for each — see
+    # pss/export_pth.py. Reloads each checkpoint's weights into `net` before saving
+    # so the exported state dict always matches that specific checkpoint file.
+    for path in {ckpt.best_model_path, ckpt.last_model_path}:
+        if path:
+            pth_path = export_state_dict(module.net, path)
+            print(f"[train] exported {path} -> {pth_path}")
 
 
 if __name__ == "__main__":

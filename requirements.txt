@@ -18,6 +18,7 @@ sentencepiece>=0.2.0         # LayoutXLM tokenizer (SentencePiece / XLM-R)
 pillow>=10.0                 # page-image loading (pss/data/dataset.py)
 PyMuPDF>=1.24                # PDF -> page-image rendering (pss/data/render.py)
 tensorboard>=2.14            # Lightning logging
+matplotlib>=3.8               # pss/analyze.py confusion-matrix/heatmap plots
 
 # LayoutLMv2/XLM's visual backbone is detectron2, which has no prebuilt wheels for
 # torch 2.6 — build it from source (needs a CUDA toolkit / nvcc matching your torch):
