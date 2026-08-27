@@ -9,17 +9,27 @@ from PIL import Image
 
 
 def norm_boxes(words, width, height):
-    """Pixel boxes -> int 0..1000, clamped. Returns (texts, boxes)."""
+    """Pixel boxes -> int 0..1000, clamped. Returns (texts, boxes).
+
+    Each axis is sorted (min then max) *before* clamping so the result always
+    satisfies ``0 <= x0 <= x1 <= 1000`` and ``0 <= y0 <= y1 <= 1000``. LayoutLMv2/XLM
+    looks up its 2-D position embeddings on the box *spans* (``x1-x0``, ``y1-y0``)
+    with ``nn.Embedding(1024)``; a negative span (an inverted box, which real OCR
+    routinely emits) is an out-of-range index -> CUDA device-side assert. Clamping
+    each coordinate independently would preserve such an inversion, so we normalize
+    ordering here."""
     texts, boxes = [], []
     sx = 1000.0 / max(1, width)
     sy = 1000.0 / max(1, height)
     for w in words:
         x0, y0, x1, y1 = w["box"]
+        xa, xb = sorted((x0 * sx, x1 * sx))
+        ya, yb = sorted((y0 * sy, y1 * sy))
         bx = [
-            min(1000, max(0, int(x0 * sx))),
-            min(1000, max(0, int(y0 * sy))),
-            min(1000, max(0, int(x1 * sx))),
-            min(1000, max(0, int(y1 * sy))),
+            min(1000, max(0, int(xa))),
+            min(1000, max(0, int(ya))),
+            min(1000, max(0, int(xb))),
+            min(1000, max(0, int(yb))),
         ]
         texts.append(w["text"])
         boxes.append(bx)

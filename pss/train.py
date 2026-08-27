@@ -56,6 +56,18 @@ def main():
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     seed_everything(cfg.seed)
 
+    # Resolve auto inverse-frequency type weights BEFORE the model is built so the
+    # weight tensor is baked into the loss. Done here (not in the model) because it
+    # needs the on-disk train split, and it stays pure-stdlib.
+    if cfg.model.type_class_weights == "auto":
+        from pss.data.type_stats import inverse_freq_weights
+
+        names, counts, weights = inverse_freq_weights(cfg.data.root, "train")
+        cfg.model.type_class_weights = [float(w) for w in weights]
+        print("[train] auto type_class_weights (inverse-freq over train pages):")
+        for n, c, w in zip(names, counts, weights):
+            print(f"    {n:<28} pages={c:<8} weight={w:.3f}")
+
     module = PSSLightningModule(cfg)
 
     # one tokenizer / image processor shared by both datasets

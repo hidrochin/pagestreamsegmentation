@@ -28,6 +28,8 @@ SUPPORTED_BACKBONES = (
 VARIANTS = ("B0", "B1", "I1")
 SEQ_HEAD_TYPES = ("cnn", "transformer")
 PAGE_EMBED_MODES = ("cls", "cls_mean", "cls_mean_visual")
+TYPE_FROM_MODES = ("context", "page", "page_plus_context")
+BOUNDARY_FROM_MODES = ("context", "pairwise", "pairwise_context")
 
 
 def default_config():
@@ -46,6 +48,10 @@ def default_config():
                 "page_embed": "cls",  # cls | cls_mean | cls_mean_visual
                 "n_types": 16,  # #document types; must match the dataset
                 "type_loss_weight": 1.0,  # lambda on the type loss
+                "type_from": "context",  # I1 type head input: context | page | page_plus_context
+                "boundary_from": "context",  # I1 boundary head input: context | pairwise | pairwise_context
+                "type_class_weights": None,  # per-type CE weights: null | "auto" | [w0,...]
+                "type_focal_gamma": 0.0,  # >0 => focal type loss (down-weights majority)
                 "boundary_pos_weight": 2.0,  # up-weight the minority breaking-point class
                 "freeze_encoder": False,  # freeze LayoutXLM (fast B0) then unfreeze
                 "seq_head": {  # used by I1 (context over the page sequence)
@@ -54,6 +60,7 @@ def default_config():
                     "kernel_size": 3,
                     "dropout": 0.2,
                     "hidden_size": 0,  # 0 => taper channels from encoder hidden dim
+                    "residual": False,  # skip-connection + per-page LayerNorm per conv (cnn only)
                     "n_heads": 8,  # transformer head only
                 },
             },
@@ -149,6 +156,23 @@ def _validate(cfg):
     ), f"backbone must be one of {SUPPORTED_BACKBONES}"
     assert cfg.model.seq_head.type in SEQ_HEAD_TYPES
     assert cfg.model.page_embed in PAGE_EMBED_MODES
+    assert (
+        cfg.model.type_from in TYPE_FROM_MODES
+    ), f"model.type_from must be one of {TYPE_FROM_MODES}"
+    assert (
+        cfg.model.get("boundary_from", "context") in BOUNDARY_FROM_MODES
+    ), f"model.boundary_from must be one of {BOUNDARY_FROM_MODES}"
+    if cfg.model.type_from == "page_plus_context" and cfg.model.seq_head.hidden_size:
+        raise AssertionError(
+            "model.type_from=page_plus_context requires model.seq_head.hidden_size=0 "
+            "so the context output dim matches the encoder dim"
+        )
+    tw = cfg.model.type_class_weights
+    if tw not in (None, "auto"):
+        assert (
+            len(tw) == cfg.model.n_types
+        ), f"model.type_class_weights must have n_types={cfg.model.n_types} entries"
+    assert cfg.model.type_focal_gamma >= 0
     assert cfg.data.max_pages >= 1
     assert 1 <= cfg.data.window_stride <= cfg.data.max_pages
     assert cfg.infer.window_pages >= 1
@@ -172,7 +196,9 @@ def _validate(cfg):
         )
 
 
-_BACKBONE_HIDDEN_SIZE = 768  # LayoutLMv2/XLM-base hidden size (both SUPPORTED_BACKBONES)
+_BACKBONE_HIDDEN_SIZE = (
+    768  # LayoutLMv2/XLM-base hidden size (both SUPPORTED_BACKBONES)
+)
 
 
 def _encoder_output_dim(cfg):

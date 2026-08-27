@@ -9,17 +9,22 @@ model:
   variant: I1            # B0 (per-page) | B1 (page-pair) | I1 (sequence over pages)
   max_seq_length: 512
   image_size: 224
-  page_embed: cls        # cls | cls_mean | cls_mean_visual
+  page_embed: cls_mean   # cls | cls_mean | cls_mean_visual (text-leaning: title is the signal)
   n_types: 16            # set to the number of document types in your corpus
   type_loss_weight: 1.0
+  type_from: page        # per-page type so a long same-type run can't smear onto neighbors
+  boundary_from: pairwise_context  # sharp raw adjacent-page contrast ++ CNN context
+  type_class_weights: null   # null | "auto" (inverse-freq over train) | [w0,...,wN]
+  type_focal_gamma: 0.0  # >0 => focal type loss (down-weights the majority type)
   boundary_pos_weight: 2.0
-  freeze_encoder: false
+  freeze_encoder: false  # unfreeze so the encoder learns the title-vs-layout cue
   seq_head:
     type: cnn            # cnn (TABME, primary) | transformer (ablation)
     n_layers: 5
     kernel_size: 3
     dropout: 0.2
     hidden_size: 0
+    residual: true       # skip + per-page LayerNorm so 5 layers don't wash out per-page identity
 
 data:
   root: ./datasets/pss

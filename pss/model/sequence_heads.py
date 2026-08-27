@@ -21,36 +21,55 @@ class TemporalCNN(nn.Module):
     contextual features — the final logit projection lives in the heads, not the
     conv stack. Padded pages (``page_mask==0``) are re-zeroed after every layer so
     their (bias-only) activations can never leak into real pages' receptive
-    fields, matching TransformerOverPages' masking guarantee."""
+    fields, matching TransformerOverPages' masking guarantee.
 
-    def __init__(self, dim, n_layers=5, kernel_size=3, dropout=0.2, hidden_size=0):
+    ``residual=True`` adds a skip connection around each conv (``h = h + conv(h)``,
+    where channel widths match) plus a per-page channel LayerNorm. This matters at
+    depth: a plain 5-layer stack washes out a page's own embedding by the last
+    layer (its representation becomes mostly a blend of neighbors), which is exactly
+    what smears a dominant type across a run; the skip preserves the per-page signal
+    while still adding context, and gives a gradient highway so depth trains cleanly.
+    The LayerNorm is over the channel dim per page position only (no mixing across
+    pages), so the masking guarantee above is unaffected. ``residual=False`` (the
+    default) reproduces the original plain stack bit-for-bit."""
+
+    def __init__(
+        self, dim, n_layers=5, kernel_size=3, dropout=0.2, hidden_size=0, residual=False
+    ):
         super().__init__()
         c = hidden_size or dim
         pad = kernel_size // 2
-        blocks = []
+        self.residual = bool(residual)
+        convs, norms, res_flags = [], [], []
         in_c = dim
         for _ in range(n_layers):
-            blocks.append(
-                nn.Sequential(
-                    nn.Conv1d(in_c, c, kernel_size, padding=pad),
-                    nn.ReLU(inplace=True),
-                    nn.Dropout(dropout),
-                )
-            )
+            convs.append(nn.Conv1d(in_c, c, kernel_size, padding=pad))
+            # residual only where the skip is dimension-compatible (in_c == out_c);
+            # with hidden_size=0 that holds for every layer.
+            res_flags.append(self.residual and in_c == c)
+            norms.append(nn.LayerNorm(c) if self.residual else nn.Identity())
             in_c = c
-        self.blocks = nn.ModuleList(blocks)
+        self.convs = nn.ModuleList(convs)
+        self.norms = nn.ModuleList(norms)
+        self.res_flags = res_flags
+        self.act = nn.ReLU(inplace=True)
+        self.drop = nn.Dropout(dropout)
         self.out_dim = in_c
 
     def forward(self, x, page_mask=None):  # x: [B, P, D]
-        m = page_mask.unsqueeze(-1).to(x.dtype) if page_mask is not None else None
-        h = x * m if m is not None else x
-        h = h.transpose(1, 2)  # [B, D, P]
-        m_t = m.transpose(1, 2) if m is not None else None  # [B, 1, P]
-        for block in self.blocks:
-            h = block(h)
-            if m_t is not None:
-                h = h * m_t
-        return h.transpose(1, 2)  # [B, P, C]
+        m = (
+            page_mask.unsqueeze(-1).to(x.dtype) if page_mask is not None else None
+        )  # [B,P,1]
+        h = x * m if m is not None else x  # [B, P, D]
+        for conv, norm, res in zip(self.convs, self.norms, self.res_flags):
+            y = conv(h.transpose(1, 2)).transpose(1, 2)  # [B, P, C]
+            y = self.drop(self.act(y))
+            h = h + y if res else y
+            if self.residual:
+                h = norm(h)  # per-page channel norm; padded pages re-zeroed next
+            if m is not None:
+                h = h * m
+        return h  # [B, P, C]
 
 
 class TransformerOverPages(nn.Module):

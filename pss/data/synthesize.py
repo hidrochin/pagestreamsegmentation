@@ -49,17 +49,37 @@ def _load_doc_meta(root):
     return metas, sorted(types)
 
 
-def _split_docs(metas, splits, rng):
-    docs = list(metas)
+def _slice_docs(docs, splits, rng):
+    docs = list(docs)
     rng.shuffle(docs)
     n = len(docs)
     n_tr = int(splits[0] * n)
     n_va = int(splits[1] * n)
-    return {
-        "train": docs[:n_tr],
-        "val": docs[n_tr : n_tr + n_va],
-        "test": docs[n_tr + n_va :],
-    }
+    return docs[:n_tr], docs[n_tr : n_tr + n_va], docs[n_tr + n_va :]
+
+
+def _split_docs(metas, splits, rng, stratify=False):
+    """Document-level split (a doc is wholly in one split — no page leakage).
+
+    stratify=True splits *each type* by the same ratios and concatenates, so every
+    type is represented in train/val/test even when some types have very few
+    documents (otherwise a global shuffle can drop a rare type out of val/test
+    entirely, making its per-type metrics unmeasurable). Still document-level, so
+    it introduces no leakage."""
+    if not stratify:
+        tr, va, te = _slice_docs(metas, splits, rng)
+        return {"train": tr, "val": va, "test": te}
+
+    by_type = {}
+    for d in metas:
+        by_type.setdefault(d["type"], []).append(d)
+    out = {"train": [], "val": [], "test": []}
+    for _, docs in sorted(by_type.items()):
+        tr, va, te = _slice_docs(docs, splits, rng)
+        out["train"] += tr
+        out["val"] += va
+        out["test"] += te
+    return out
 
 
 def _pages_from_docs(docs):
@@ -122,6 +142,7 @@ def synthesize(
     seed=42,
     mix_strategy="stratified",
     min_types=2,
+    stratify_split=False,
 ):
     n_folders = n_folders or {"train": 100000, "val": 5000, "test": 5000}
     rng = random.Random(seed)
@@ -133,7 +154,7 @@ def synthesize(
     with open(os.path.join(root, "class_names.txt"), "w", encoding="utf-8") as fp:
         fp.write("\n".join(types) + "\n")
 
-    by_split = _split_docs(metas, splits, rng)
+    by_split = _split_docs(metas, splits, rng, stratify=stratify_split)
 
     for split, docs in by_split.items():
         if not docs:
@@ -186,6 +207,12 @@ def main():
         default=2,
         help="stratified only: minimum distinct source types per folder.",
     )
+    ap.add_argument(
+        "--stratify_split",
+        action="store_true",
+        help="split each type 90/5/5 independently so every type appears in "
+        "train/val/test (recommended for small/imbalanced corpora).",
+    )
     a = ap.parse_args()
     synthesize(
         a.root,
@@ -193,6 +220,7 @@ def main():
         n_folders={"train": a.n_train, "val": a.n_val, "test": a.n_test},
         mix_strategy=a.mix_strategy,
         min_types=a.min_types,
+        stratify_split=a.stratify_split,
         seed=a.seed,
     )
 

@@ -174,13 +174,26 @@ The model is assembled from a **shared page encoder** + a **context model over p
 - **[pss/model/sequence_heads.py](pss/model/sequence_heads.py)** — `TemporalCNN`
   (Conv1d over the page axis, zero-padded, ~5 layers, kernel 3, dropout 0.2 —
   TABME's design; `page_mask` is re-applied after every layer so a padded page's
-  bias-only activations can never leak into a real page's receptive field),
+  bias-only activations can never leak into a real page's receptive field;
+  `model.seq_head.residual=true` adds a skip connection + per-page LayerNorm around
+  each conv so a deep stack doesn't wash out per-page identity — off by default,
+  reproducing the plain stack bit-for-bit),
   `TransformerOverPages` (ablation, masks padding via `src_key_padding_mask`), and
   `BoundaryHead` / `TypeHead`.
 - **[pss/model/variants.py](pss/model/variants.py)** — `PSSModel` + `build_model(cfg)`.
   Works on a unified batch dict `[B, P, ...]`; `encode()` folds `[B,P,...]→[B*P,...]`
   through the encoder. Loss = class-weighted boundary CrossEntropy (`ignore_index=-100`,
   minority up-weighted by `boundary_pos_weight`) + `type_loss_weight` · type CE.
+  In I1 the two heads' inputs are independently switchable: `model.type_from` ∈
+  {`context` (off the TemporalCNN output), `page` (raw `e_i`, so a long same-type run
+  can't smear its type onto neighbors), `page_plus_context`} and `model.boundary_from`
+  ∈ {`context`, `pairwise` (B1-style `[e_{i-1},e_i,|Δ|,e_{i-1}·e_i]` on the **raw**
+  embeddings, keeping the title-word jump sharp), `pairwise_context` (that contrast ++
+  the contextual `h_i`, so the CNN still informs and receives gradient for boundary)}.
+  The pairwise contrast is `PSSModel._pairwise`, shared with B1. Defaults are
+  `context`/`context` (original behavior); [configs/pss.yaml](configs/pss.yaml) sets
+  `page`/`pairwise_context` + `seq_head.residual` + `page_embed=cls_mean` as the
+  primary recipe.
 - **[pss/lightning_module.py](pss/lightning_module.py)** — `PSSLightningModule`.
   `training_step`/`validation_step`; validation accumulates window logits in `self._val`
   and `on_validation_epoch_end` logs `val_bd_f1` (the monitored metric), P/R, kappa,
