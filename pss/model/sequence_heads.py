@@ -56,11 +56,12 @@ class TemporalCNN(nn.Module):
         self.drop = nn.Dropout(dropout)
         self.out_dim = in_c
 
-    def forward(self, x, page_mask=None):  # x: [B, P, D]
+    def forward(self, x, page_mask=None, return_layers=False):  # x: [B, P, D]
         m = (
             page_mask.unsqueeze(-1).to(x.dtype) if page_mask is not None else None
         )  # [B,P,1]
         h = x * m if m is not None else x  # [B, P, D]
+        layers = []  # post-layer page reps, for pss.probe (what the model "sees")
         for conv, norm, res in zip(self.convs, self.norms, self.res_flags):
             y = conv(h.transpose(1, 2)).transpose(1, 2)  # [B, P, C]
             y = self.drop(self.act(y))
@@ -69,6 +70,10 @@ class TemporalCNN(nn.Module):
                 h = norm(h)  # per-page channel norm; padded pages re-zeroed next
             if m is not None:
                 h = h * m
+            if return_layers:
+                layers.append(h)
+        if return_layers:
+            return h, layers
         return h  # [B, P, C]
 
 

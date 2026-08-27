@@ -78,6 +78,12 @@ python -m pss.evaluate --config=configs/pss.yaml eval_mode=test \
 python -m pss.analyze --config=configs/pss.yaml eval_mode=test \
     pretrained_model_file=pss_runs/i1_layoutxlm/checkpoints/<run_id>/last.ckpt
 
+# Model-behavior probes (HOW it decides, not how well): adjacent-page embedding
+# similarity vs true boundaries + per-conv-layer per-page identity drift, PNGs
+# under probe.out_dir (default {workspace}/probe)
+python -m pss.probe --config=configs/pss.yaml eval_mode=test \
+    pretrained_model_file=pss_runs/i1_layoutxlm/checkpoints/<run_id>/last.ckpt
+
 # Export a Lightning .ckpt to a plain-PyTorch .pth state dict (no lightning/optimizer
 # state, no "net." key prefix) — also run automatically at the end of pss.train
 python -m pss.export_pth --config=configs/pss.yaml \
@@ -179,7 +185,12 @@ The model is assembled from a **shared page encoder** + a **context model over p
   each conv so a deep stack doesn't wash out per-page identity — off by default,
   reproducing the plain stack bit-for-bit),
   `TransformerOverPages` (ablation, masks padding via `src_key_padding_mask`), and
-  `BoundaryHead` / `TypeHead`.
+  `BoundaryHead` / `TypeHead`. **To try (not yet implemented):** a **BiLSTM + linear-chain
+  CRF** context-over-pages head as a third `seq_head.type` — the CRF's transition
+  matrix would encode the `H→I→P→S` type grammar and enforce boundary⇔type-change
+  structurally (a page is a new-doc iff its decoded type differs from the previous
+  page's), instead of predicting boundary and type independently. Orthogonal to the
+  page-encoder choice, so it composes with any backbone below.
 - **[pss/model/variants.py](pss/model/variants.py)** — `PSSModel` + `build_model(cfg)`.
   Works on a unified batch dict `[B, P, ...]`; `encode()` folds `[B,P,...]→[B*P,...]`
   through the encoder. Loss = class-weighted boundary CrossEntropy (`ignore_index=-100`,
@@ -212,6 +223,18 @@ The model is assembled from a **shared page encoder** + a **context model over p
   checkpoint: boundary confusion matrix, document-type confusion matrix, per-type
   P/R/F1 bars (PNGs under `analyze.out_dir`). Built on top of
   `evaluate.py::collect_predictions`, not a separate scoring path.
+- **[pss/probe.py](pss/probe.py)** — model-*behavior* probes (not scoring) for a
+  trained checkpoint, on top of the same stitched forward pass: (1) a per-stream
+  trace of `cos(e_{i-1}, e_i)` between **raw** adjacent-page embeddings overlaid on
+  the true boundaries, plus `boundary_separation.png` (the distribution of that
+  similarity at new-document vs continuation pages — the headline "does the encoder
+  linearly separate boundaries?" plot, since the primary recipe's boundary head
+  reads exactly this raw contrast); (2) per-conv-layer per-page **identity drift**
+  `cos(e_i, h^l_i)` (I1+cnn only) — visualizes whether the deep TemporalCNN washes
+  a page's own embedding into its neighbors' context (the type-collapse mechanism)
+  and whether `seq_head.residual=true` prevents it. `TemporalCNN.forward(...,
+  return_layers=True)` exposes the per-layer reps it taps. PNGs under
+  `probe.out_dir` (default `{workspace}/probe`).
 - **[pss/export_pth.py](pss/export_pth.py)** — `export_state_dict(net, ckpt_path,
   out_path=None)` converts a Lightning `.ckpt` to a plain-PyTorch `.pth` state dict
   (no optimizer/Lightning state, no `"net."` key prefix) — loadable with

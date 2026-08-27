@@ -93,6 +93,10 @@ def default_config():
             "analyze": {  # pss.analyze — confusion-matrix/heatmap diagnostics
                 "out_dir": None,  # defaults to {workspace}/analysis
             },
+            "probe": {  # pss.probe — model-behavior probes (adjacent-emb sim, layer drift)
+                "out_dir": None,  # defaults to {workspace}/probe
+                "max_streams": 8,  # #per-stream trace figures to emit
+            },
             "export": {  # pss.export_pth — .ckpt -> plain torch .pth state dict
                 "out": None,  # defaults to pretrained_model_file with .pth extension
             },
